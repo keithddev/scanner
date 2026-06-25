@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>極速前端 OCR 單據掃描</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f0f0; margin: 0; padding: 20px; }
+        #camera-container { position: relative; display: inline-block; margin-top: 20px; }
+        #video { width: 100%; max-width: 600px; background: #000; border-radius: 8px; }
+        
+        /* 取景框 UI - 引導用戶將單據號碼對準這裡 */
+        #targeting-box {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 300px; height: 80px; /* 假設單據號碼是長條形 */
+            margin-left: -150px; margin-top: -40px;
+            border: 3px solid #00ff00;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); /* 讓周圍變暗 */
+            box-sizing: border-box;
+            z-index: 10;
+        }
+        
+        #result-panel { margin-top: 20px; padding: 15px; background: #fff; border-radius: 8px; font-size: 1.2em; font-weight: bold; color: #333; }
+        #status { color: #666; font-size: 0.9em; margin-bottom: 10px; }
+        
+        /* 隱藏的 Canvas 用於裁剪圖片交給 OCR */
+        #hidden-canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <h2>單據編號 OCR 掃描</h2>
+    <div id="status">系統初始化中，請稍候...</div>
+    
+    <div id="camera-container" style="display: none;">
+        <video id="video" autoplay playsinline></video>
+        <div id="targeting-box"></div> </div>
+
+    <canvas id="hidden-canvas" width="300" height="80"></canvas>
+    
+    <div id="result-panel">辨識結果: <span id="ocr-result" style="color: #d9534f;">尚未掃描</span></div>
+    <button id="restart-btn" style="display:none; margin-top: 15px; padding: 10px 20px;">重新掃描</button>
+
+    <script>
+        let worker = null;
+        let scanningInterval = null;
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('hidden-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        // 假設你的單據號碼格式是 8 位純數字 (例如: 12345678)
+        // 這個正則表達式是 1 秒內命中目標的關鍵
+        const RECEIPT_REGEX = /\b\d{8}\b/; 
+
+        $(document).ready(async function() {
+            try {
+                // 1. 背景預熱 OCR 引擎 (Pre-warming)
+                $('#status').text('正在載入 OCR 引擎 (只在首次進入需時)...');
+                worker = await Tesseract.createWorker('eng');
+                
+                // 設定白名單：限制只辨識數字和英文字母，大幅提升速度與準確率
+                await worker.setParameters({
+                    tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                });
+                
+                $('#status').text('OCR 引擎準備就緒。請允許相機權限。');
+                
+                // 2. 啟動後置相機
+                startCamera();
+
+            } catch (err) {
+                $('#status').text('OCR 初始化失敗: ' + err.message);
+            }
+        });
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment" } // 強制使用後置鏡頭
+                });
+                video.srcObject = stream;
+                $('#camera-container').show();
+                $('#status').text('請將單據編號對準綠色框框...');
+                
+                // 當影片開始播放後，啟動連續掃描循環
+                video.onplaying = () => {
+                    startScanning();
+                };
+            } catch (err) {
+                $('#status').text('無法存取相機: ' + err.message);
+            }
+        }
+
+        function startScanning() {
+            // 每 800 毫秒截圖一次進行辨識 (避免將低階手機 CPU 塞爆)
+            scanningInterval = setInterval(processFrame, 800);
+        }
+
+        async function processFrame() {
+            if (!worker || video.paused || video.ended) return;
+
+            // 計算取景框在 Video 實際分辨率中的相對位置
+            // 這裡為了簡化 PoC，我們直接將 video 中心點對應到 canvas
+            const videoWidth = video.videoWidth;
+            const videoHeight = video.videoHeight;
+            const boxWidth = canvas.width;
+            const boxHeight = canvas.height;
+            
+            const startX = (videoWidth - boxWidth) / 2;
+            const startY = (videoHeight - boxHeight) / 2;
+
+            // 3. 核心關鍵：只把取景框內的畫面畫到 Canvas 上 (局部裁剪)
+            ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
+
+            try {
+                // 4. 將裁剪後的小圖 (300x80) 送入 OCR 辨識
+                const { data: { text } } = await worker.recognize(canvas);
+                const cleanText = text.replace(/\s+/g, ''); // 清除空格
+                
+                console.log("當前幀辨識結果:", cleanText);
+
+                // 5. 使用正則表達式快速匹配目標格式
+                const match = cleanText.match(RECEIPT_REGEX);
+                
+                if (match) {
+                    // 命中目標！立即停止掃描
+                    clearInterval(scanningInterval);
+                    
+                    // 播放一聲 "嗶" 聲 (可選，提升 UX)
+                    // new Audio('beep.mp3').play();
+                    
+                    $('#ocr-result').text(match[0]).css('color', '#5cb85c');
+                    $('#status').text('掃描成功！');
+                    $('#restart-btn').show();
+                    
+                    // TODO: 在這裡使用 jQuery 自動將 match[0] 填入你的 Struts 表單中
+                    // $('#receiptInput').val(match[0]);
+                }
+            } catch (err) {
+                console.error("辨識錯誤:", err);
+            }
+        }
+
+        // 重新掃描按鈕綁定
+        $('#restart-btn').click(function() {
+            $(this).hide();
+            $('#ocr-result').text('尚未掃描').css('color', '#d9534f');
+            $('#status').text('請將單據編號對準綠色框框...');
+            startScanning();
+        });
+    </script>
+</body>
+</html>
