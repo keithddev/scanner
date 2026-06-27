@@ -53,13 +53,16 @@
         
         // 假設你的單據號碼格式是 8 位純數字 (例如: 12345678)
         // 這個正則表達式是 1 秒內命中目標的關鍵
-        const RECEIPT_REGEX = /\b\d{6}\b/; 
+        const RECEIPT_REGEX = /\b\d{8}\b/; 
 
         $(document).ready(async function() {
             try {
                 // 1. 背景預熱 OCR 引擎 (Pre-warming)
                 $('#status').text('正在載入 OCR 引擎 (只在首次進入需時)...');
-                worker = await Tesseract.createWorker('eng');
+                worker = Tesseract.createWorker();
+                await worker.load();
+                await worker.loadLanguage('eng');
+                await worker.initialize('eng');
                 
                 // 設定白名單：限制只辨識數字和英文字母，大幅提升速度與準確率
                 await worker.setParameters({
@@ -73,6 +76,7 @@
 
             } catch (err) {
                 $('#status').text('OCR 初始化失敗: ' + err.message);
+                console.error(err);
             }
         });
 
@@ -96,6 +100,7 @@
 
         function startScanning() {
             // 每 800 毫秒截圖一次進行辨識 (避免將低階手機 CPU 塞爆)
+            if (scanningInterval) clearInterval(scanningInterval);
             scanningInterval = setInterval(processFrame, 800);
         }
 
@@ -109,8 +114,8 @@
             const boxWidth = canvas.width;
             const boxHeight = canvas.height;
             
-            const startX = (videoWidth - boxWidth) / 2;
-            const startY = (videoHeight - boxHeight) / 2;
+            const startX = Math.max(0, (videoWidth - boxWidth) / 2);
+            const startY = Math.max(0, (videoHeight - boxHeight) / 2);
 
             // 3. 核心關鍵：只把取景框內的畫面畫到 Canvas 上 (局部裁剪)
             ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
@@ -118,7 +123,7 @@
             try {
                 // 4. 將裁剪後的小圖 (300x80) 送入 OCR 辨識
                 const { data: { text } } = await worker.recognize(canvas);
-                const cleanText = text.replace(/\s+/g, ''); // 清除空格
+                const cleanText = (text || '').replace(/\s+/g, ''); // 清除空格
                 
                 console.log("當前幀辨識結果:", cleanText);
 
