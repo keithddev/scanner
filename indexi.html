@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>iPad 兼容極速前端 OCR</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 20px; }
+        #camera-container { position: relative; display: inline-block; margin-top: 20px; width: 100%; max-width: 500px; }
+        /* 確保影片在 iPad 上能正確適應寬度 */
+        #video { width: 100%; height: auto; background: #000; border-radius: 12px; transform: scaleX(1); }
+        
+        /* 針對 iPad 調整的取景框 */
+        #targeting-box {
+            position: absolute;
+            top: 50%; left: 50%;
+            width: 280px; height: 70px;
+            margin-left: -140px; margin-top: -35px;
+            border: 3px solid #34c759; /* Apple Style Green */
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+            box-sizing: border-box;
+            z-index: 10;
+            pointer-events: none; /* 防止阻擋點擊事件 */
+        }
+        
+        .btn { padding: 12px 24px; font-size: 1rem; border: none; border-radius: 8px; background: #0071e3; color: white; cursor: pointer; font-weight: 500; }
+        .btn:disabled { background: #aeaeab; }
+        #result-panel { margin-top: 20px; padding: 20px; background: #fff; border-radius: 12px; font-size: 1.3em; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        #status { color: #86868b; font-size: 0.95em; margin-bottom: 15px; }
+        #hidden-canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <h2>單據編號實時掃描 (iPad 兼容版)</h2>
+    <div id="status">正在初始化環境...</div>
+    
+    <button id="start-btn" class="btn" disabled>請稍候...</button>
+    
+    <div id="camera-container" style="display: none;">
+        <video id="video" autoplay playsinline muted></video>
+        <div id="targeting-box"></div>
+    </div>
+
+    <canvas id="hidden-canvas" width="280" height="70"></canvas>
+    
+    <div id="result-panel">單據編號: <span id="ocr-result" style="color: #ff3b30;">等待掃描</span></div>
+    <button id="restart-btn" class="btn" style="display:none; margin-top: 15px;">重新掃描</button>
+
+    <script>
+        let worker = null;
+        let scanningInterval = null;
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('hidden-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        
+        // 匹配 8 位數字編號
+        const RECEIPT_REGEX = /\b\d{8}\b/; 
+
+        $(document).ready(async function() {
+            try {
+                // 1. 預熱引擎
+                $('#status').text('正在初始化 OCR 推論引擎...');
+                worker = await Tesseract.createWorker('eng');
+                await worker.setParameters({
+                    tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                });
+                
+                $('#status').text('系統就緒，請點擊下方按鈕開啟相機。');
+                $('#start-btn').text('開啟相記掃描').prop('disabled', false);
+            } catch (err) {
+                $('#status').text('初始化失敗: ' + err.message);
+            }
+        });
+
+        // 綁定點擊事件以符合 iOS 安全策略
+        $('#start-btn').click(function() {
+            $(this).hide();
+            startCameraForiPad();
+        });
+
+        async function startCameraForiPad() {
+            try {
+                // 針對 iOS 優化的相機參數
+                const constraints = {
+                    video: {
+                        facingMode: "environment",
+                        // 限制解像度可以減少 iPad 的記憶體壓力，並加快 Canvas 處理速度
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false // 純 OCR 不需要音訊
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                $('#camera-container').show();
+                $('#status').text('請將單據號碼置於綠色框內...');
+                
+                video.onplaying = () => {
+                    startScanning();
+                };
+            } catch (err) {
+                $('#status').text('相機啟動失敗，請確保使用 HTTPS 環境並允許權限。');
+                $('#start-btn').show().text('重試');
+            }
+        }
+
+        function startScanning() {
+            // 每 700 毫秒截取一次
+            scanningInterval = setInterval(processFrame, 700);
+        }
+
+        async function processFrame() {
+            if (!worker || video.paused || video.ended) return;
+
+            // 獲取 iPad 當前視訊流的實際解像度
+            const videoWidth = video.videoWidth;
+            const videoHeight = video.videoHeight;
+            
+            if (videoWidth === 0 || videoHeight === 0) return;
+
+            const boxWidth = canvas.width;
+            const boxHeight = canvas.height;
+            
+            // 精確計算視訊中心的座標，裁剪出對應取景框的畫面
+            const startX = (videoWidth - boxWidth) / 2;
+            const startY = (videoHeight - boxHeight) / 2;
+
+            // 清除上一幀，重新繪製局部小圖
+            ctx.clearRect(0, 0, boxWidth, boxHeight);
+            ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
+
+            try {
+                // 送入 WebWorker 進行快速辨識
+                const { data: { text } } = await worker.recognize(canvas);
+                const cleanText = text.replace(/\s+/g, ''); 
+                
+                console.log("iPad 實時幀數據:", cleanText);
+
+                const match = cleanText.match(RECEIPT_REGEX);
+                if (match) {
+                    clearInterval(scanningInterval);
+                    
+                    $('#ocr-result').text(match[0]).css('color', '#34c759');
+                    $('#status').text('掃描成功！已自動提取編號。');
+                    $('#restart-btn').show();
+                    
+                    // 這裡可以透過 jQuery 將數據填回你的 Java Struts 後端表單
+                    // $('#struts_form_input_id').val(match[0]);
+                }
+            } catch (err) {
+                console.error("OCR 處理異常:", err);
+            }
+        }
+
+        $('#restart-btn').click(function() {
+            $(this).hide();
+            $('#ocr-result').text('等待掃描').css('color', '#ff3b30');
+            $('#status').text('請將單據編號置於綠色框內...');
+            startScanning();
+        });
+    </script>
+</body>
+</html>
