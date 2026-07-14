@@ -3,61 +3,46 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iPad 效能優化版 OCR</title>
+    <title>iPad OCR 實時除錯版</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 20px; }
+        body { font-family: -apple-system, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 10px; }
         
         #camera-container { 
-            position: relative; 
-            display: inline-block; 
-            margin-top: 20px; 
-            width: 100%; 
-            max-width: 600px; 
-            background: #000;
-            border-radius: 12px;
-            overflow: hidden;
+            position: relative; display: inline-block; width: 100%; max-width: 600px; 
+            background: #000; border-radius: 12px; overflow: hidden;
         }
+        #video { width: 100%; height: auto; display: block; object-fit: contain; }
         
-        #video { 
-            width: 100%; 
-            height: auto; 
-            display: block;
-            object-fit: contain; /* 確保影片比例正確不變形 */
-        }
-        
-        /* 針對 Portrait (直向) 模式的高度限制 */
         @media (orientation: portrait) {
-            #video {
-                max-height: 50vh; /* 最高只佔螢幕 50% 高度 */
-            }
+            #video { max-height: 40vh; }
         }
         
         #targeting-box {
-            position: absolute;
-            top: 50%; left: 50%;
-            width: 280px; height: 70px;
-            margin-left: -140px; margin-top: -35px;
-            border: 3px solid #34c759;
-            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
-            box-sizing: border-box;
-            z-index: 10;
-            pointer-events: none;
+            position: absolute; top: 50%; left: 50%; width: 280px; height: 70px;
+            margin-left: -140px; margin-top: -35px; border: 3px solid #34c759;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); box-sizing: border-box; z-index: 10;
         }
         
-        .btn { padding: 12px 24px; font-size: 1rem; border: none; border-radius: 8px; background: #0071e3; color: white; cursor: pointer; font-weight: 500; }
-        .btn:disabled { background: #aeaeab; }
-        #result-panel { margin-top: 20px; padding: 20px; background: #fff; border-radius: 12px; font-size: 1.3em; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-        #status { color: #86868b; font-size: 0.95em; margin-bottom: 15px; }
+        .btn { padding: 12px 24px; border: none; border-radius: 8px; background: #0071e3; color: white; font-weight: bold; width: 100%; margin-bottom: 10px;}
+        .btn:disabled { background: #ccc; }
+        
+        #result-panel { margin: 10px 0; padding: 15px; background: #fff; border-radius: 8px; font-size: 1.2em; font-weight: bold;}
+        
+        /* 內建 Debug Console 面板 */
+        #debug-panel {
+            margin-top: 10px; padding: 10px; background: #1e1e1e; color: #00ff00; 
+            height: 150px; overflow-y: scroll; text-align: left; font-family: monospace; 
+            font-size: 12px; border-radius: 8px; word-break: break-all;
+        }
+        
         #hidden-canvas { display: none; }
     </style>
 </head>
 <body>
 
-    <h2>單據掃描 (效能鎖定版)</h2>
-    <div id="status">正在初始化引擎...</div>
-    <button id="start-btn" class="btn" disabled>請稍候...</button>
+    <button id="start-btn" class="btn" disabled>引擎載入中...</button>
     
     <div id="camera-container" style="display: none;">
         <video id="video" autoplay playsinline muted></video>
@@ -66,8 +51,9 @@
 
     <canvas id="hidden-canvas" width="280" height="70"></canvas>
     
-    <div id="result-panel">單據編號: <span id="ocr-result" style="color: #ff3b30;">等待掃描</span></div>
-    <button id="restart-btn" class="btn" style="display:none; margin-top: 15px;">重新掃描</button>
+    <div id="result-panel">編號: <span id="ocr-result" style="color: #ff3b30;">等待中...</span></div>
+    
+    <div id="debug-panel">系統啟動中...<br></div>
 
     <script>
         let worker = null;
@@ -75,23 +61,30 @@
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
-        const RECEIPT_REGEX = /\b\d{8}\b/; 
+        // 更改為 4 到 6 位數字
+        const RECEIPT_REGEX = /\b\d{4,6}\b/; 
+        
+        let isScanning = false;
+        let isProcessing = false;
+        let frameCount = 0;
 
-        // 效能控制核心變數
-        let isScanning = false;   // 系統是否處於掃描模式
-        let isProcessing = false; // Worker 是否正在忙碌處理單個幀
+        // 自定義 Debug 輸出函數
+        function logDebug(msg) {
+            const time = new Date().toLocaleTimeString('en-US', {hour12:false});
+            $('#debug-panel').prepend(`[${time}] ${msg}<br>`);
+        }
 
         $(document).ready(async function() {
             try {
+                logDebug("開始載入 Tesseract 核心...");
                 worker = await Tesseract.createWorker('eng');
                 await worker.setParameters({
                     tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
                 });
-                
-                $('#status').text('系統就緒。');
-                $('#start-btn').text('開啟相機掃描').prop('disabled', false);
+                logDebug("引擎準備完畢，等待相機權限");
+                $('#start-btn').text('啟動相機掃描').prop('disabled', false);
             } catch (err) {
-                $('#status').text('初始化失敗: ' + err.message);
+                logDebug(`ERROR: 引擎初始化失敗 - ${err.message}`);
             }
         });
 
@@ -102,89 +95,71 @@
 
         async function startCamera() {
             try {
-                const constraints = {
-                    video: {
-                        facingMode: "environment",
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                };
-
+                logDebug("請求相機權限...");
+                const constraints = { video: { facingMode: "environment" }, audio: false };
                 const stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
                 $('#camera-container').show();
-                $('#status').text('請將編號置於綠色框內...');
                 
                 video.onplaying = () => {
-                    isScanning = true;
-                    scanLoop(); // 啟動掃描迴圈
+                    logDebug(`影片播放中. 尺寸: ${video.videoWidth}x${video.videoHeight}`);
+                    if (!isScanning) {
+                        isScanning = true;
+                        scanLoop(); 
+                    }
                 };
             } catch (err) {
-                $('#status').text('相機啟動失敗。');
-                $('#start-btn').show().text('重試');
+                logDebug(`ERROR: 相機啟動失敗 - ${err.name} : ${err.message}`);
             }
         }
 
-        // 取代 setInterval 的核心迴圈函數
         async function scanLoop() {
-            if (!isScanning) return; // 如果已經掃描成功或停止，則中斷迴圈
+            if (!isScanning) return;
 
             if (!isProcessing) {
-                await processFrame(); // 等待這一幀完全辨識結束
+                await processFrame(); 
             }
-
-            // 讓 iPad CPU 休息 400 毫秒再發起下一次掃描 (避免過熱與記憶體堆疊)
-            setTimeout(scanLoop, 400); 
+            // 間隔 500ms
+            setTimeout(scanLoop, 500); 
         }
 
         async function processFrame() {
-            if (!worker || video.paused || video.ended) return;
-
-            const videoWidth = video.videoWidth;
-            const videoHeight = video.videoHeight;
-            if (videoWidth === 0 || videoHeight === 0) return;
-
-            isProcessing = true; // 上鎖：告訴系統 Worker 正在忙碌
+            if (!worker || video.paused || video.videoWidth === 0) return;
+            
+            isProcessing = true;
+            frameCount++;
 
             const boxWidth = canvas.width;
             const boxHeight = canvas.height;
-            const startX = (videoWidth - boxWidth) / 2;
-            const startY = (videoHeight - boxHeight) / 2;
+            const startX = (video.videoWidth - boxWidth) / 2;
+            const startY = (video.videoHeight - boxHeight) / 2;
 
             ctx.clearRect(0, 0, boxWidth, boxHeight);
             ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
 
             try {
+                // 標記開始辨識
+                logDebug(`Frame #${frameCount}: 開始辨識...`);
+                
                 const { data: { text } } = await worker.recognize(canvas);
                 const cleanText = text.replace(/\s+/g, ''); 
                 
-                console.log("辨識結果:", cleanText);
+                // 【關鍵點】把 OCR 看到的結果印出來，即使是空字串或亂碼
+                logDebug(`> 看到文字: "${cleanText}"`);
 
                 const match = cleanText.match(RECEIPT_REGEX);
                 if (match) {
-                    isScanning = false; // 命中目標，完全停止掃描迴圈
-                    
+                    logDebug(`★★★ 命中正則表達式: ${match[0]} ★★★`);
+                    isScanning = false; 
                     $('#ocr-result').text(match[0]).css('color', '#34c759');
-                    $('#status').text('掃描成功！');
-                    $('#restart-btn').show();
+                    $('#start-btn').text('重新掃描').show();
                 }
             } catch (err) {
-                console.error("OCR 處理異常:", err);
+                logDebug(`ERROR 辨識錯誤: ${err.message}`);
             } finally {
-                isProcessing = false; // 解鎖：Worker 完成任務，允許截取下一幀
+                isProcessing = false; 
             }
         }
-
-        $('#restart-btn').click(function() {
-            $(this).hide();
-            $('#ocr-result').text('等待掃描').css('color', '#ff3b30');
-            $('#status').text('請將編號置於綠色框內...');
-            
-            // 重新啟動掃描流程
-            isScanning = true;
-            scanLoop();
-        });
     </script>
 </body>
 </html>
