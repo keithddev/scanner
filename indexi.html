@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iPad OCR 嗶聲除錯版</title>
+    <title>iPad OCR 雙模式 (掃描+手動)</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 10px; }
+        body { font-family: -apple-system, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 15px; }
         
         #camera-container { 
             position: relative; display: inline-block; width: 100%; max-width: 600px; 
-            background: #000; border-radius: 12px; overflow: hidden;
+            background: #000; border-radius: 12px; overflow: hidden; margin-bottom: 15px;
         }
         #video { width: 100%; height: auto; display: block; object-fit: contain; }
         
@@ -25,14 +25,24 @@
             box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); box-sizing: border-box; z-index: 10;
         }
         
-        .btn { padding: 12px 24px; border: none; border-radius: 8px; background: #0071e3; color: white; font-weight: bold; width: 100%; margin-bottom: 10px;}
+        .btn { padding: 12px 24px; border: none; border-radius: 8px; background: #0071e3; color: white; font-weight: bold; width: 100%; font-size: 1.1em; }
         .btn:disabled { background: #ccc; }
+        .btn-secondary { background: #34c759; margin-top: 10px;}
         
-        #result-panel { margin: 10px 0; padding: 15px; background: #fff; border-radius: 8px; font-size: 1.2em; font-weight: bold;}
+        #result-panel { margin: 10px 0; padding: 15px; background: #fff; border-radius: 8px; font-size: 1.3em; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.05);}
+        
+        /* 手動輸入區塊樣式 */
+        #manual-input-section {
+            margin: 15px 0; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        .input-field {
+            width: calc(100% - 30px); padding: 12px; font-size: 1.2em; border: 1px solid #ccc; 
+            border-radius: 8px; margin-bottom: 10px; text-align: center; letter-spacing: 2px;
+        }
         
         #debug-panel {
-            margin-top: 10px; padding: 10px; background: #1e1e1e; color: #00ff00; 
-            height: 150px; overflow-y: scroll; text-align: left; font-family: monospace; 
+            margin-top: 15px; padding: 10px; background: #1e1e1e; color: #00ff00; 
+            height: 120px; overflow-y: scroll; text-align: left; font-family: monospace; 
             font-size: 12px; border-radius: 8px; word-break: break-all;
         }
         
@@ -50,8 +60,14 @@
 
     <canvas id="hidden-canvas" width="280" height="70"></canvas>
     
-    <div id="result-panel">編號: <span id="ocr-result" style="color: #ff3b30;">等待中...</span></div>
+    <div id="result-panel">辨識編號: <span id="ocr-result" style="color: #ff3b30;">等待中...</span></div>
     
+    <div id="manual-input-section">
+        <div style="margin-bottom: 10px; color: #666; font-size: 0.9em;">掃描失敗或過慢？請直接輸入</div>
+        <input type="tel" id="manual-input" class="input-field" placeholder="輸入 4-6 位數字" maxlength="6">
+        <button id="manual-submit-btn" class="btn btn-secondary">手動確認</button>
+    </div>
+
     <div id="debug-panel">系統啟動中...<br></div>
 
     <script>
@@ -60,18 +76,16 @@
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
-        // 4 到 6 位數字
         const RECEIPT_REGEX = /\b\d{4,6}\b/; 
+        const EXACT_MATCH_REGEX = /^\d{4,6}$/; // 用於手動輸入的嚴格驗證
         
         let isScanning = false;
         let isProcessing = false;
         let frameCount = 0;
 
-        // --- 音效 (Web Audio API) 核心代碼 ---
+        // --- 音效 (Web Audio API) ---
         let audioCtx = null;
-
         function initAudio() {
-            // 初始化並解鎖 iOS 的音效限制 (必須在用戶點擊時觸發)
             if (!audioCtx) {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             }
@@ -82,24 +96,17 @@
 
         function playBeep() {
             if (!audioCtx) return;
-            // 創建振盪器 (產生聲音)
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
-            
-            oscillator.type = 'sine'; // 聲音類型 (正弦波，聽起來像常見的電子嗶聲)
-            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); // 800Hz 頻率
-            
-            // 設定音量衰減，讓聲音清脆 (0.15秒內淡出)
+            oscillator.type = 'sine'; 
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); 
             gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
             gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
-            
             oscillator.connect(gainNode);
             gainNode.connect(audioCtx.destination);
-            
             oscillator.start();
             oscillator.stop(audioCtx.currentTime + 0.15);
         }
-        // -------------------------------------
 
         function logDebug(msg) {
             const time = new Date().toLocaleTimeString('en-US', {hour12:false});
@@ -111,38 +118,71 @@
                 logDebug("開始載入 Tesseract 核心...");
                 worker = await Tesseract.createWorker('eng');
                 await worker.setParameters({
-                    tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                    tessedit_char_whitelist: '0123456789', // 既然只有數字，把英文字母拿掉可以加快速度
                 });
-                logDebug("引擎準備完畢，等待相機權限");
+                logDebug("引擎準備完畢");
                 $('#start-btn').text('啟動相機掃描').prop('disabled', false);
             } catch (err) {
                 logDebug(`ERROR: 引擎初始化失敗 - ${err.message}`);
             }
         });
 
+        // 啟動相機
         $('#start-btn').click(function() {
             $(this).hide();
-            initAudio(); // 【關鍵】在這裡解鎖 iOS 音效權限
+            initAudio(); 
             startCamera();
+        });
+
+        // --- 新增：處理成功抓取單號的共用邏輯 ---
+        function handleSuccess(number, source) {
+            isScanning = false; // 停止相機掃描迴圈
+            playBeep(); // 播放嗶聲
+            
+            $('#ocr-result').text(number).css('color', '#34c759');
+            $('#start-btn').text('重新掃描').show();
+            
+            if(source === 'auto') {
+                logDebug(`★★★ 相機掃描成功: ${number} ★★★`);
+            } else {
+                logDebug(`★★★ 手動輸入成功: ${number} ★★★`);
+            }
+
+            // 這裡可以觸發將資料送回 Java Struts 後端的邏輯
+            // $('#yourFormInput').val(number);
+            // $('#yourForm').submit();
+        }
+
+        // --- 新增：手動輸入按鈕事件 ---
+        $('#manual-submit-btn').click(function() {
+            initAudio(); // 確保直接按手動也能解鎖音效
+            const manualValue = $('#manual-input').val().trim();
+            
+            if (EXACT_MATCH_REGEX.test(manualValue)) {
+                handleSuccess(manualValue, 'manual');
+                // 輸入成功後可選：清空輸入框或隱藏小鍵盤
+                $('#manual-input').blur(); 
+            } else {
+                alert("請輸入有效的 4 到 6 位數字編號！");
+                $('#manual-input').focus();
+            }
         });
 
         async function startCamera() {
             try {
-                logDebug("請求相機權限...");
                 const constraints = { video: { facingMode: "environment" }, audio: false };
                 const stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
                 $('#camera-container').show();
                 
                 video.onplaying = () => {
-                    logDebug(`影片播放中. 尺寸: ${video.videoWidth}x${video.videoHeight}`);
                     if (!isScanning) {
                         isScanning = true;
                         scanLoop(); 
                     }
                 };
             } catch (err) {
-                logDebug(`ERROR: 相機啟動失敗 - ${err.name} : ${err.message}`);
+                logDebug(`ERROR: 相機啟動失敗 - ${err.message}`);
             }
         }
 
@@ -156,7 +196,6 @@
 
         async function processFrame() {
             if (!worker || video.paused || video.videoWidth === 0) return;
-            
             isProcessing = true;
             frameCount++;
 
@@ -169,26 +208,17 @@
             ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
 
             try {
-                logDebug(`Frame #${frameCount}: 開始辨識...`);
-                
                 const { data: { text } } = await worker.recognize(canvas);
                 const cleanText = text.replace(/\s+/g, ''); 
-                
-                logDebug(`> 看到文字: "${cleanText}"`);
+                logDebug(`> 看到: "${cleanText}"`);
 
                 const match = cleanText.match(RECEIPT_REGEX);
                 if (match) {
-                    logDebug(`★★★ 命中: ${match[0]} ★★★`);
-                    isScanning = false; 
-                    
-                    // 【觸發音效】掃描成功，播放嗶聲
-                    playBeep();
-                    
-                    $('#ocr-result').text(match[0]).css('color', '#34c759');
-                    $('#start-btn').text('重新掃描').show();
+                    // 呼叫共用的成功處理函數
+                    handleSuccess(match[0], 'auto');
                 }
             } catch (err) {
-                logDebug(`ERROR 辨識錯誤: ${err.message}`);
+                logDebug(`ERROR: ${err.message}`);
             } finally {
                 isProcessing = false; 
             }
