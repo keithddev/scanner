@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>iPad OCR 實時除錯版</title>
+    <title>iPad OCR 嗶聲除錯版</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <style>
@@ -30,7 +30,6 @@
         
         #result-panel { margin: 10px 0; padding: 15px; background: #fff; border-radius: 8px; font-size: 1.2em; font-weight: bold;}
         
-        /* 內建 Debug Console 面板 */
         #debug-panel {
             margin-top: 10px; padding: 10px; background: #1e1e1e; color: #00ff00; 
             height: 150px; overflow-y: scroll; text-align: left; font-family: monospace; 
@@ -61,14 +60,47 @@
         const canvas = document.getElementById('hidden-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
-        // 更改為 4 到 6 位數字
+        // 4 到 6 位數字
         const RECEIPT_REGEX = /\b\d{4,6}\b/; 
         
         let isScanning = false;
         let isProcessing = false;
         let frameCount = 0;
 
-        // 自定義 Debug 輸出函數
+        // --- 音效 (Web Audio API) 核心代碼 ---
+        let audioCtx = null;
+
+        function initAudio() {
+            // 初始化並解鎖 iOS 的音效限制 (必須在用戶點擊時觸發)
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playBeep() {
+            if (!audioCtx) return;
+            // 創建振盪器 (產生聲音)
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.type = 'sine'; // 聲音類型 (正弦波，聽起來像常見的電子嗶聲)
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); // 800Hz 頻率
+            
+            // 設定音量衰減，讓聲音清脆 (0.15秒內淡出)
+            gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            oscillator.start();
+            oscillator.stop(audioCtx.currentTime + 0.15);
+        }
+        // -------------------------------------
+
         function logDebug(msg) {
             const time = new Date().toLocaleTimeString('en-US', {hour12:false});
             $('#debug-panel').prepend(`[${time}] ${msg}<br>`);
@@ -90,6 +122,7 @@
 
         $('#start-btn').click(function() {
             $(this).hide();
+            initAudio(); // 【關鍵】在這裡解鎖 iOS 音效權限
             startCamera();
         });
 
@@ -115,11 +148,9 @@
 
         async function scanLoop() {
             if (!isScanning) return;
-
             if (!isProcessing) {
                 await processFrame(); 
             }
-            // 間隔 500ms
             setTimeout(scanLoop, 500); 
         }
 
@@ -138,19 +169,21 @@
             ctx.drawImage(video, startX, startY, boxWidth, boxHeight, 0, 0, boxWidth, boxHeight);
 
             try {
-                // 標記開始辨識
                 logDebug(`Frame #${frameCount}: 開始辨識...`);
                 
                 const { data: { text } } = await worker.recognize(canvas);
                 const cleanText = text.replace(/\s+/g, ''); 
                 
-                // 【關鍵點】把 OCR 看到的結果印出來，即使是空字串或亂碼
                 logDebug(`> 看到文字: "${cleanText}"`);
 
                 const match = cleanText.match(RECEIPT_REGEX);
                 if (match) {
-                    logDebug(`★★★ 命中正則表達式: ${match[0]} ★★★`);
+                    logDebug(`★★★ 命中: ${match[0]} ★★★`);
                     isScanning = false; 
+                    
+                    // 【觸發音效】掃描成功，播放嗶聲
+                    playBeep();
+                    
                     $('#ocr-result').text(match[0]).css('color', '#34c759');
                     $('#start-btn').text('重新掃描').show();
                 }
